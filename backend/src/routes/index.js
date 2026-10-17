@@ -1,5 +1,6 @@
 import { Router } from "express";
 import prisma from "../config/prisma.js";
+import { validateProfileImage } from "../shared/profileImage.js";
 import institutionUsersRouter from "./institutionUsers.js";
 import {
   requireAuth,
@@ -424,7 +425,12 @@ router.post("/copies", requireInstitutionRole("INSTITUTION_ADMIN", "LIBRARIAN"),
 // Add a library member.
 router.post("/members", requireInstitutionRole("INSTITUTION_ADMIN", "LIBRARIAN"), async (req, res, next) => {
   try {
-    const { institutionId, membershipNumber, fullName, email, phone } = req.body;
+    const { institutionId, membershipNumber, fullName, email, phone, profileImage } = req.body || {};
+
+    const photo = validateProfileImage(profileImage);
+    if (!photo.ok) {
+      return res.status(400).json({ success: false, message: photo.message });
+    }
 
     if (!institutionId || !membershipNumber?.trim() || !fullName?.trim()) {
       return res.status(400).json({
@@ -450,7 +456,8 @@ router.post("/members", requireInstitutionRole("INSTITUTION_ADMIN", "LIBRARIAN")
         membershipNumber: membershipNumber.trim(),
         fullName: fullName.trim(),
         email: email?.trim() || null,
-        phone: phone?.trim() || null
+        phone: phone?.trim() || null,
+        profileImage: photo.value
       }
     });
 
@@ -488,6 +495,40 @@ router.get("/members", requireInstitutionRole("INSTITUTION_ADMIN", "LIBRARIAN"),
   }
 });
 
+
+// Update or remove the profile photo for a member in the selected institution.
+router.patch("/institutions/:institutionId/members/:memberId/profile-image", requireInstitutionRole("INSTITUTION_ADMIN", "LIBRARIAN"), async (req, res, next) => {
+  try {
+    const { institutionId, memberId } = req.params;
+    const body = req.body || {};
+
+    if (!Object.prototype.hasOwnProperty.call(body, "profileImage")) {
+      return res.status(400).json({ success: false, message: "Profile image is required. Use null to remove it." });
+    }
+
+    const photo = validateProfileImage(body.profileImage);
+    if (!photo.ok) {
+      return res.status(400).json({ success: false, message: photo.message });
+    }
+
+    const member = await prisma.member.findFirst({
+      where: { id: memberId, institutionId },
+      select: { id: true }
+    });
+    if (!member) {
+      return res.status(404).json({ success: false, message: "Member not found in this institution" });
+    }
+
+    const updated = await prisma.member.update({
+      where: { id: member.id },
+      data: { profileImage: photo.value }
+    });
+
+    res.json({ success: true, message: photo.value ? "Profile photo updated." : "Profile photo removed.", data: updated });
+  } catch (error) {
+    next(error);
+  }
+});
 
 // Borrow an available book copy.
 router.post("/loans", requireInstitutionRole("INSTITUTION_ADMIN", "LIBRARIAN"), async (req, res, next) => {

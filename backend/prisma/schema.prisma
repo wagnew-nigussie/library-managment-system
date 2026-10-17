@@ -71,6 +71,7 @@ model Institution {
 model User {
   id           String       @id @default(cuid())
   fullName     String
+  profileImage String? @db.Text
   email        String       @unique
   passwordHash String
   isSuperAdmin Boolean      @default(false)
@@ -139,6 +140,7 @@ model Member {
   institutionId    String
   membershipNumber String
   fullName         String
+  profileImage String? @db.Text
   email            String?
   phone            String?
   status           RecordStatus @default(ACTIVE)

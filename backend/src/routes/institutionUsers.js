@@ -1,6 +1,7 @@
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import prisma from "../config/prisma.js";
+import { validateProfileImage } from "../shared/profileImage.js";
 
 const router = Router();
 
@@ -65,7 +66,8 @@ router.get("/:id/users", async (req, res, next) => {
             id: true,
             fullName: true,
             email: true,
-            status: true
+            status: true,
+            profileImage: true
           }
         }
       },
@@ -78,10 +80,64 @@ router.get("/:id/users", async (req, res, next) => {
   }
 });
 
+router.patch("/:id/users/:userId/profile-image", async (req, res, next) => {
+  try {
+    const institutionId = req.params.id;
+    const userId = req.params.userId;
+    const body = req.body || {};
+
+    if (!Object.prototype.hasOwnProperty.call(body, "profileImage")) {
+      return res.status(400).json({ success: false, message: "Profile image is required. Use null to remove it." });
+    }
+
+    const photo = validateProfileImage(body.profileImage);
+    if (!photo.ok) {
+      return res.status(400).json({ success: false, message: photo.message });
+    }
+
+    const institution = await prisma.institution.findUnique({
+      where: { id: institutionId },
+      select: { id: true, status: true }
+    });
+    if (!institution) {
+      return res.status(404).json({ success: false, message: "Institution not found" });
+    }
+    if (institution.status !== "APPROVED") {
+      return res.status(400).json({ success: false, message: "Institution must be approved first" });
+    }
+    if (!canManageInstitution(req, institutionId)) {
+      return res.status(403).json({ success: false, message: "You cannot manage users for this institution" });
+    }
+
+    const membership = await prisma.institutionUser.findUnique({
+      where: { institutionId_userId: { institutionId, userId } },
+      select: { id: true }
+    });
+    if (!membership) {
+      return res.status(404).json({ success: false, message: "User is not assigned to this institution" });
+    }
+
+    const user = await prisma.user.update({
+      where: { id: userId },
+      data: { profileImage: photo.value },
+      select: { id: true, fullName: true, email: true, status: true, profileImage: true }
+    });
+
+    res.json({ success: true, message: photo.value ? "Profile photo updated." : "Profile photo removed.", data: user });
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.post("/:id/users", async (req, res, next) => {
   try {
     const institutionId = req.params.id;
-    const { fullName, email, password, role } = req.body || {};
+    const { fullName, email, password, role, profileImage } = req.body || {};
+
+    const photo = validateProfileImage(profileImage);
+    if (!photo.ok) {
+      return res.status(400).json({ success: false, message: photo.message });
+    }
 
     if (
       typeof fullName !== "string" || !fullName.trim() ||
@@ -149,6 +205,7 @@ router.post("/:id/users", async (req, res, next) => {
         fullName: fullName.trim(),
         email: normalizedEmail,
         passwordHash,
+        profileImage: photo.value,
         memberships: {
           create: { institutionId, role }
         }
@@ -158,6 +215,7 @@ router.post("/:id/users", async (req, res, next) => {
         fullName: true,
         email: true,
         status: true,
+        profileImage: true,
         memberships: {
           where: { institutionId },
           select: { institutionId: true, role: true }

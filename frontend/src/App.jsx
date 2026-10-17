@@ -65,6 +65,48 @@ const columns = {
   ],
 };
 
+async function prepareProfileImage(file) {
+  if (!file) throw new Error("Choose a photo first.");
+  const allowedTypes = ["image/jpeg", "image/png", "image/webp"];
+  if (!allowedTypes.includes(file.type)) {
+    throw new Error("Choose a JPEG, PNG, or WebP image.");
+  }
+  if (file.size > 5 * 1024 * 1024) {
+    throw new Error("The original photo must be 5 MB or smaller.");
+  }
+
+  let bitmap;
+  try {
+    bitmap = await createImageBitmap(file);
+  } catch {
+    throw new Error("The selected photo could not be opened.");
+  }
+
+  const maxSide = 360;
+  const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+  canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+  const context = canvas.getContext("2d");
+  if (!context) {
+    bitmap.close?.();
+    throw new Error("Photo processing is not supported by this browser.");
+  }
+  context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close?.();
+
+  let quality = 0.82;
+  let dataUrl = canvas.toDataURL("image/jpeg", quality);
+  while (dataUrl.length > 455000 && quality > 0.50) {
+    quality -= 0.08;
+    dataUrl = canvas.toDataURL("image/jpeg", quality);
+  }
+  if (dataUrl.length > 455000) {
+    throw new Error("This photo is too detailed to compress. Please select another photo.");
+  }
+  return dataUrl;
+}
+
 export default function App({ user }) {
   const isSuperAdmin = Boolean(user?.isSuperAdmin);
   const roleMemberships = (user?.memberships || []).filter(
@@ -102,10 +144,12 @@ export default function App({ user }) {
   const [members, setMembers] = useState([]);
   const [loans, setLoans] = useState([]);
   const [users, setUsers] = useState([]);
-  const [userForm, setUserForm] = useState({ fullName: "", email: "", password: "", role: "LIBRARIAN" });
+  const [userForm, setUserForm] = useState({
+    profileImage: "", fullName: "", email: "", password: "", role: "LIBRARIAN" });
   const [loanForm, setLoanForm] = useState({ memberId: "", bookCopyId: "" });
   const [settingsForm, setSettingsForm] = useState({ loanDays: 14, maxLoans: 5, finePerDay: "0" });
-  const [memberForm, setMemberForm] = useState({ membershipNumber: "", fullName: "", email: "", phone: "" });
+  const [memberForm, setMemberForm] = useState({
+    profileImage: "", membershipNumber: "", fullName: "", email: "", phone: "" });
   const [selectedInstitution, setSelectedInstitution] = useState("");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
@@ -169,7 +213,8 @@ export default function App({ user }) {
           ...item,
           fullName: item.user?.fullName || "",
           email: item.user?.email || "",
-          status: item.user?.status || ""
+          status: item.user?.status || "",
+          profileImage: item.user?.profileImage || ""
         }))))
         .catch((err) => setError(err.message));
     }
@@ -410,6 +455,79 @@ export default function App({ user }) {
     }
   }
 
+  async function refreshProfilePeople(view) {
+    if (!selectedInstitution) return;
+
+    if (view === "members") {
+      const result = await apiRequest(
+        `/members?institutionId=${encodeURIComponent(selectedInstitution)}`
+      );
+      setMembers(getList(result, "members"));
+      return;
+    }
+
+    const refreshed = await apiRequest(
+      `/institutions/${encodeURIComponent(selectedInstitution)}/users`
+    );
+    setUsers(getList(refreshed, "users").map((item) => ({
+      ...item,
+      fullName: item.user?.fullName || "",
+      email: item.user?.email || "",
+      status: item.user?.status || "",
+      profileImage: item.user?.profileImage || ""
+    })));
+  }
+
+  async function updateProfilePhoto(event, record) {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file) return;
+
+    try {
+      setError("");
+      setNotice("");
+      if (!selectedInstitution) throw new Error("Select an institution first.");
+      const profileImage = await prepareProfileImage(file);
+      const isMember = activeView === "members";
+      const userId = record.user?.id || record.userId || record.id;
+      const endpoint = isMember
+        ? `/institutions/${encodeURIComponent(selectedInstitution)}/members/${encodeURIComponent(record.id)}/profile-image`
+        : `/institutions/${encodeURIComponent(selectedInstitution)}/users/${encodeURIComponent(userId)}/profile-image`;
+
+      const result = await apiRequest(endpoint, {
+        method: "PATCH",
+        body: JSON.stringify({ profileImage })
+      });
+      await refreshProfilePeople(isMember ? "members" : "users");
+      setNotice(result.message || "Profile photo updated.");
+    } catch (err) {
+      setError(err.message || "Could not update the profile photo.");
+    }
+  }
+
+  async function removeProfilePhoto(record) {
+    try {
+      setError("");
+      setNotice("");
+      if (!selectedInstitution) throw new Error("Select an institution first.");
+      const isMember = activeView === "members";
+      const userId = record.user?.id || record.userId || record.id;
+      const endpoint = isMember
+        ? `/institutions/${encodeURIComponent(selectedInstitution)}/members/${encodeURIComponent(record.id)}/profile-image`
+        : `/institutions/${encodeURIComponent(selectedInstitution)}/users/${encodeURIComponent(userId)}/profile-image`;
+
+      const result = await apiRequest(endpoint, {
+        method: "PATCH",
+        body: JSON.stringify({ profileImage: null })
+      });
+      await refreshProfilePeople(isMember ? "members" : "users");
+      setNotice(result.message || "Profile photo removed.");
+    } catch (err) {
+      setError(err.message || "Could not remove the profile photo.");
+    }
+  }
+
   async function submitMember(event) {
     event.preventDefault();
     setError("");
@@ -428,7 +546,8 @@ export default function App({ user }) {
           membershipNumber: memberForm.membershipNumber.trim(),
           fullName: memberForm.fullName.trim(),
           email: memberForm.email.trim() || undefined,
-          phone: memberForm.phone.trim() || undefined
+          phone: memberForm.phone.trim() || undefined,
+          profileImage: memberForm.profileImage || null
         })
       });
 
@@ -436,7 +555,7 @@ export default function App({ user }) {
         `/members?institutionId=${encodeURIComponent(selectedInstitution)}`
       );
       setMembers(getList(result, "members"));
-      setMemberForm({ membershipNumber: "", fullName: "", email: "", phone: "" });
+      setMemberForm({ membershipNumber: "", fullName: "", email: "", phone: "", profileImage: "" });
       setShowForm(false);
       setNotice("Member registered successfully.");
     } catch (err) {
@@ -499,7 +618,8 @@ export default function App({ user }) {
             fullName: userForm.fullName.trim(),
             email: userForm.email.trim(),
             password: userForm.password,
-            role: userForm.role
+            role: userForm.role,
+            profileImage: userForm.profileImage || null
           })
         }
       );
@@ -512,14 +632,16 @@ export default function App({ user }) {
         ...item,
         fullName: item.user?.fullName || "",
         email: item.user?.email || "",
-        status: item.user?.status || ""
+        status: item.user?.status || "",
+          profileImage: item.user?.profileImage || ""
       })));
 
       setUserForm({
         fullName: "",
         email: "",
         password: "",
-        role: "LIBRARIAN"
+        role: "LIBRARIAN",
+        profileImage: ""
       });
       setShowForm(false);
       setNotice(result.message || "User created successfully.");
@@ -1034,6 +1156,35 @@ export default function App({ user }) {
                         placeholder="Phone number"
                       />
                     </label>
+                    <div className="profile-upload-field">
+                      <label>Profile photo (optional)
+                        <input
+                          type="file"
+                          accept="image/jpeg,image/png,image/webp"
+                          onChange={async (event) => {
+                            const input = event.currentTarget;
+                            const file = input.files?.[0];
+                            input.value = "";
+                            if (!file) return;
+                            try {
+                              const profileImage = await prepareProfileImage(file);
+                              setMemberForm((current) => ({ ...current, profileImage }));
+                              setError("");
+                            } catch (err) {
+                              setError(err.message || "Could not process the photo.");
+                            }
+                          }}
+                        />
+                      </label>
+                      {memberForm.profileImage ? (
+                        <div className="profile-form-preview-row">
+                          <img className="profile-form-preview" src={memberForm.profileImage} alt="Member profile preview" />
+                          <button type="button" className="profile-clear-button" onClick={() => setMemberForm((current) => ({ ...current, profileImage: "" }))}>Remove selected photo</button>
+                        </div>
+                      ) : (
+                        <p className="profile-upload-hint">JPEG, PNG or WebP · original file up to 5 MB</p>
+                      )}
+                    </div>
                   </div>
                   <button className="primary-button" type="submit">
                     Register member
@@ -1104,6 +1255,35 @@ export default function App({ user }) {
                         <option value="MEMBER">Member</option>
                       </select>
                     </label>
+                    <div className="profile-upload-field">
+                      <label>Profile photo (optional)
+                        <input
+                          type="file"
+                          accept="image/jpeg,image/png,image/webp"
+                          onChange={async (event) => {
+                            const input = event.currentTarget;
+                            const file = input.files?.[0];
+                            input.value = "";
+                            if (!file) return;
+                            try {
+                              const profileImage = await prepareProfileImage(file);
+                              setUserForm((current) => ({ ...current, profileImage }));
+                              setError("");
+                            } catch (err) {
+                              setError(err.message || "Could not process the photo.");
+                            }
+                          }}
+                        />
+                      </label>
+                      {userForm.profileImage ? (
+                        <div className="profile-form-preview-row">
+                          <img className="profile-form-preview" src={userForm.profileImage} alt="User profile preview" />
+                          <button type="button" className="profile-clear-button" onClick={() => setUserForm((current) => ({ ...current, profileImage: "" }))}>Remove selected photo</button>
+                        </div>
+                      ) : (
+                        <p className="profile-upload-hint">JPEG, PNG or WebP · original file up to 5 MB</p>
+                      )}
+                    </div>
                   </div>
                   <button className="primary-button" type="submit">
                     Create user account
@@ -1181,15 +1361,112 @@ export default function App({ user }) {
                       <tbody>
                         {currentList.map((record, index) => (
                           <tr key={record.id || `${activeView}-${index}`}>
-                            {(columns[activeView] || []).map(([key]) => (
-                              <td key={key}>
-                                {key === "status" ? (
-                                  <span className={`record-status ${String(record[key] || "").toLowerCase()}`}>
-                                    {displayValue(record[key])}
-                                  </span>
-                                ) : displayValue(record[key])}
-                              </td>
-                            ))}
+                            {(columns[activeView] || []).map(([key], columnIndex) => (
+  <td key={key}>
+    {(["members", "users"].includes(activeView) && columnIndex === 0) ? (
+      (() => {
+        const profileName = String(
+          record.fullName ||
+          record.full_name ||
+          record.name ||
+          record.memberName ||
+          record.member_name ||
+          record.username ||
+          record.email ||
+          displayValue(record[key]) ||
+          "Library User"
+        );
+
+        const savedImage =
+          record.profileImage ||
+          record.profile_image ||
+          record.profilePicture ||
+          record.profile_picture ||
+          record.avatarUrl ||
+          record.avatar_url ||
+          record.photoUrl ||
+          record.photo_url ||
+          record.imageUrl ||
+          record.image_url ||
+          record.picture ||
+          record.photo ||
+          record.image;
+
+        const imageUrl = savedImage ||
+          `https://api.dicebear.com/9.x/avataaars/svg?seed=${encodeURIComponent(
+            profileName + "-" + (record.role || activeView)
+          )}`;
+
+        const secondary = record.email || record.role || "";
+
+        return (
+          <div className="profile-table-cell">
+            <img
+              className="profile-table-avatar"
+              src={imageUrl}
+              alt={`${profileName} profile`}
+              loading="lazy"
+              onError={(event) => {
+                event.currentTarget.style.display = "none";
+                const fallback = event.currentTarget.nextElementSibling;
+                if (fallback) fallback.style.display = "grid";
+              }}
+            />
+
+            <span
+              className="profile-table-avatar-fallback"
+              aria-hidden="true"
+              style={{ display: "none" }}
+            >
+              {profileName
+                .split(/\s+/)
+                .filter(Boolean)
+                .slice(0, 2)
+                .map((part) => part.charAt(0).toUpperCase())
+                .join("") || "U"}
+            </span>
+
+            <div className="profile-table-identity">
+              <strong>{profileName}</strong>
+
+              {secondary && String(secondary) !== profileName && (
+                <span>{displayValue(secondary)}</span>
+              )}
+
+              {String(record[key] ?? "") !== profileName && (
+                <small>{displayValue(record[key])}</small>
+              )}
+            </div>
+            <div className="profile-table-actions">
+              <label className="profile-photo-change" title={`Change ${profileName}'s profile photo`}>
+                Change photo
+                <input
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  aria-label={`Change profile photo for ${profileName}`}
+                  onChange={(event) => updateProfilePhoto(event, record)}
+                />
+              </label>
+              {savedImage && (
+                <button
+                  type="button"
+                  className="profile-photo-remove"
+                  onClick={() => removeProfilePhoto(record)}
+                >
+                  Remove
+                </button>
+              )}
+            </div>
+          </div>
+        );
+      })()
+    ) : key === "status" ? (
+      <span className={`record-status ${String(record[key] || "").toLowerCase()}`}>
+        {displayValue(record[key])}
+      </span>
+    ) : displayValue(record[key])}
+  </td>
+))}
                             {activeView === "institutions" && isSuperAdmin && (
                               <td>
                                 {record.status === "PENDING" ? (
