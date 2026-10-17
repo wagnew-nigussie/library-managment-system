@@ -358,7 +358,13 @@ router.get("/books", async (req, res, next) => {
           where: req.user.isSuperAdmin
             ? undefined
             : { institutionId: { in: allowedCopyInstitutionIds } },
-          select: { id: true, institutionId: true, status: true }
+          select: {
+            id: true,
+            institutionId: true,
+            status: true,
+            barcode: true,
+            shelfLocation: true
+          }
         }
       },
       orderBy: { title: "asc" },
@@ -626,6 +632,24 @@ router.patch("/loans/:id/return", requireLoanInstitutionRole("INSTITUTION_ADMIN"
       });
     }
 
+    const returnedAt = new Date();
+
+    const settings = await prisma.institutionSettings.findUnique({
+      where: { institutionId: loan.institutionId },
+      select: { finePerDay: true }
+    });
+
+    const overdueMilliseconds =
+      returnedAt.getTime() - new Date(loan.dueAt).getTime();
+
+    const lateDays = overdueMilliseconds > 0
+      ? Math.ceil(overdueMilliseconds / (24 * 60 * 60 * 1000))
+      : 0;
+
+    const fineAmount = (
+      lateDays * Number(settings?.finePerDay ?? 0)
+    ).toFixed(2);
+
     const returnedLoan = await prisma.$transaction(async (tx) => {
       await tx.bookCopy.update({
         where: { id: loan.bookCopyId },
@@ -636,7 +660,8 @@ router.patch("/loans/:id/return", requireLoanInstitutionRole("INSTITUTION_ADMIN"
         where: { id: loan.id },
         data: {
           status: "RETURNED",
-          returnedAt: new Date()
+          returnedAt,
+          fineAmount
         },
         include: {
           member: true,
@@ -770,6 +795,15 @@ router.get("/loans", requireInstitutionRole("INSTITUTION_ADMIN", "LIBRARIAN"), a
         message: "institutionId query parameter is required"
       });
     }
+
+    await prisma.loan.updateMany({
+      where: {
+        institutionId: String(institutionId),
+        status: "ACTIVE",
+        dueAt: { lt: new Date() }
+      },
+      data: { status: "OVERDUE" }
+    });
 
     const loans = await prisma.loan.findMany({
       where: { institutionId: String(institutionId) },

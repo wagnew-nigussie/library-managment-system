@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "Loan" ADD COLUMN     "fineAmount" DECIMAL(10,2) NOT NULL DEFAULT 0.00;

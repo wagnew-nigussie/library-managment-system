@@ -4,6 +4,7 @@ import { apiRequest, getList } from "./services/apiClient.js";
 const menu = [
   { id: "overview", icon: "▦", label: "Dashboard" },
   { id: "books", icon: "▤", label: "Books" },
+  { id: "copies", icon: "▣", label: "Book Copies" },
   { id: "institutions", icon: "⌂", label: "Institutions" },
   { id: "members", icon: "♙", label: "Members" },
   { id: "loans", icon: "⇄", label: "Loans" },
@@ -14,6 +15,7 @@ const menu = [
 const titles = {
   overview: "Dashboard Overview",
   books: "Book Catalog",
+  copies: "Book Copies",
   institutions: "Institutions",
   members: "Library Members",
   loans: "Book Loans",
@@ -22,6 +24,13 @@ const titles = {
 };
 
 const columns = {
+  copies: [
+    ["bookTitle", "Book Title"],
+    ["bookAuthor", "Author"],
+    ["barcode", "Barcode"],
+    ["shelfLocation", "Shelf Location"],
+    ["status", "Status"],
+  ],
   books: [
     ["title", "Book Title"],
     ["author", "Author"],
@@ -46,6 +55,7 @@ const columns = {
     ["bookCopy", "Book Title / Author"],
     ["dueAt", "Due Date"],
     ["status", "Status"],
+    ["fineAmount", "Fine Amount"],
   ],
   users: [
     ["fullName", "Full Name"],
@@ -55,10 +65,39 @@ const columns = {
   ],
 };
 
-export default function App() {
+export default function App({ user }) {
+  const isSuperAdmin = Boolean(user?.isSuperAdmin);
+  const roleMemberships = (user?.memberships || []).filter(
+    (membership) => membership.institution?.status === "APPROVED"
+  );
+  const hasRole = (...roles) =>
+    roleMemberships.some((membership) => roles.includes(membership.role));
+  const canManageUsers =
+    isSuperAdmin || hasRole("INSTITUTION_ADMIN");
+  const canManageSettings =
+    isSuperAdmin || hasRole("INSTITUTION_ADMIN");
+
+  const visibleMenu = menu.filter((item) => {
+    if (isSuperAdmin) return true;
+    if (item.id === "users") return canManageUsers;
+    if (item.id === "settings") return canManageSettings;
+    if (item.id === "copies") return hasRole("INSTITUTION_ADMIN", "LIBRARIAN");
+    if (item.id === "institutions") return hasRole("INSTITUTION_ADMIN");
+    if (item.id === "members" || item.id === "loans") {
+      return hasRole("INSTITUTION_ADMIN", "LIBRARIAN");
+    }
+    if (item.id === "overview" || item.id === "books") return true;
+    return false;
+  });
+
   const [activeView, setActiveView] = useState("overview");
   const [apiStatus, setApiStatus] = useState("Checking");
   const [books, setBooks] = useState([]);
+  const [copyForm, setCopyForm] = useState({
+    bookId: "",
+    barcode: "",
+    shelfLocation: ""
+  });
   const [institutions, setInstitutions] = useState([]);
   const [members, setMembers] = useState([]);
   const [loans, setLoans] = useState([]);
@@ -336,6 +375,41 @@ export default function App() {
   }
 
 
+  async function submitCopy(event) {
+    event.preventDefault();
+    setError("");
+    setNotice("");
+
+    if (!selectedInstitution) {
+      setError("Select an institution first.");
+      return;
+    }
+
+    if (!copyForm.bookId || !copyForm.barcode.trim()) {
+      setError("Select a book and enter a barcode.");
+      return;
+    }
+
+    try {
+      await apiRequest("/copies", {
+        method: "POST",
+        body: JSON.stringify({
+          institutionId: selectedInstitution,
+          bookId: copyForm.bookId,
+          barcode: copyForm.barcode.trim(),
+          shelfLocation: copyForm.shelfLocation.trim() || undefined
+        })
+      });
+
+      await refreshBooks();
+      setCopyForm({ bookId: "", barcode: "", shelfLocation: "" });
+      setShowForm(false);
+      setNotice("Book copy registered successfully.");
+    } catch (err) {
+      setError(err.message || "Could not register the book copy.");
+    }
+  }
+
   async function submitMember(event) {
     event.preventDefault();
     setError("");
@@ -456,6 +530,17 @@ export default function App() {
 
   const currentList =
     activeView === "books" ? books :
+    activeView === "copies" ? (selectedInstitution
+      ? books.flatMap((book) =>
+          (book.copiesAsBook || [])
+            .filter((copy) => copy.institutionId === selectedInstitution)
+            .map((copy) => ({
+              ...copy,
+              bookTitle: book.title,
+              bookAuthor: book.author
+            }))
+        )
+      : []) :
     activeView === "institutions" ? institutions :
     activeView === "members" ? members :
     activeView === "loans" ? loans :
@@ -490,7 +575,7 @@ export default function App() {
 
         <div className="nav-heading">WORKSPACE</div>
         <nav className="navigation">
-          {menu.map((item) => (
+          {visibleMenu.map((item) => (
             <button
               key={item.id}
               className={`nav-item ${activeView === item.id ? "active" : ""}`}
@@ -687,11 +772,20 @@ export default function App() {
                     {activeView === "loans" && "Review circulation records for an institution."}
                   </p>
                 </div>
-                {(activeView === "books" || activeView === "institutions" || activeView === "members" || activeView === "users") && (
+                {(
+                  (activeView === "books" &&
+                    (isSuperAdmin || hasRole("INSTITUTION_ADMIN", "LIBRARIAN"))) ||
+                  (activeView === "copies" &&
+                    (isSuperAdmin || hasRole("INSTITUTION_ADMIN", "LIBRARIAN"))) ||
+                  (activeView === "institutions" && isSuperAdmin) ||
+                  (activeView === "members" &&
+                    (isSuperAdmin || hasRole("INSTITUTION_ADMIN", "LIBRARIAN"))) ||
+                  (activeView === "users" && canManageUsers)
+                ) && (
                   <button
                     className="primary-button"
                     onClick={() => {
-                      if ((activeView === "members" || activeView === "users") && !selectedInstitution) {
+                      if ((activeView === "members" || activeView === "users" || activeView === "copies") && !selectedInstitution) {
                         setError("Select an institution before registering a member.");
                         return;
                       }
@@ -701,13 +795,13 @@ export default function App() {
                   >
                     {showForm ? "Cancel" : "+ Add " + (
                       activeView === "books" ? "book" :
-                      activeView === "institutions" ? "institution" : activeView === "members" ? "member" : "user"
+                      activeView === "institutions" ? "institution" : activeView === "copies" ? "copy" : activeView === "members" ? "member" : "user"
                     )}
                   </button>
                 )}
               </div>
 
-              {activeView === "members" || activeView === "loans" || activeView === "settings" || activeView === "users" ? (
+              {activeView === "members" || activeView === "loans" || activeView === "settings" || activeView === "users" || activeView === "copies" ? (
                 <section className="content-panel filter-panel">
                   <label htmlFor="institution-select">Select institution</label>
                   <select
@@ -775,7 +869,7 @@ export default function App() {
                   </div>
                   <button className="primary-button" type="submit">Save settings</button>
                   <p className="helper-text">
-                    Note: the late-fee rate is stored here; automatic fine calculation is not implemented yet.
+                    Overdue loans are updated automatically. The late fee is calculated when the book is returned, using this institution's daily fine rate.
                   </p>
                 </form>
               )}
@@ -835,6 +929,58 @@ export default function App() {
                   <p className="helper-text">
                     The return date follows the institution's configured loan period.
                   </p>
+                </form>
+              )}
+
+              {showForm && activeView === "copies" && selectedInstitution && (
+                <form className="content-panel form-panel" onSubmit={submitCopy}>
+                  <h3>Register a physical book copy</h3>
+                  <p className="helper-text">
+                    Select the book, enter a unique barcode, and add its shelf location.
+                  </p>
+                  <div className="form-grid">
+                    <label>Book *
+                      <select
+                        required
+                        value={copyForm.bookId}
+                        onChange={(event) => setCopyForm({
+                          ...copyForm,
+                          bookId: event.target.value
+                        })}
+                      >
+                        <option value="">Choose a book...</option>
+                        {books.map((book) => (
+                          <option key={book.id} value={book.id}>
+                            {book.title} — {book.author}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>Barcode *
+                      <input
+                        required
+                        value={copyForm.barcode}
+                        onChange={(event) => setCopyForm({
+                          ...copyForm,
+                          barcode: event.target.value
+                        })}
+                        placeholder="e.g. WAG-BOOK-0002"
+                      />
+                    </label>
+                    <label>Shelf location
+                      <input
+                        value={copyForm.shelfLocation}
+                        onChange={(event) => setCopyForm({
+                          ...copyForm,
+                          shelfLocation: event.target.value
+                        })}
+                        placeholder="e.g. A-02"
+                      />
+                    </label>
+                  </div>
+                  <button className="primary-button" type="submit">
+                    Register book copy
+                  </button>
                 </form>
               )}
 
@@ -949,7 +1095,9 @@ export default function App() {
                         })}
                       >
                         <option value="LIBRARIAN">Librarian</option>
-                        <option value="INSTITUTION_ADMIN">Institution Admin</option>
+                        {isSuperAdmin && (
+                          <option value="INSTITUTION_ADMIN">Institution Admin</option>
+                        )}
                         <option value="TEACHER">Teacher</option>
                         <option value="STUDENT">Student</option>
                         <option value="PARENT">Parent</option>
@@ -1027,7 +1175,8 @@ export default function App() {
                   <div className="table-scroll">
                     <table>
                       <thead>
-                        <tr>{(columns[activeView] || []).map(([key, label]) => <th key={key}>{label}</th>)}{(activeView === "institutions" || activeView === "loans") && <th>Actions</th>}</tr>
+                        <tr>{(columns[activeView] || []).map(([key, label]) => <th key={key}>{label}</th>)}{((activeView === "institutions" && isSuperAdmin) ||
+                            activeView === "loans") && <th>Actions</th>}</tr>
                       </thead>
                       <tbody>
                         {currentList.map((record, index) => (
@@ -1041,7 +1190,7 @@ export default function App() {
                                 ) : displayValue(record[key])}
                               </td>
                             ))}
-                            {activeView === "institutions" && (
+                            {activeView === "institutions" && isSuperAdmin && (
                               <td>
                                 {record.status === "PENDING" ? (
                                   <div className="row-actions">

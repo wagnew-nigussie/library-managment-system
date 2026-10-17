@@ -81,7 +81,7 @@ export default function Root() {
           Sign out
         </button>
       </div>
-      <App key={user.id} />
+      <App key={user.id} user={user} />
     </>
   );
 }
