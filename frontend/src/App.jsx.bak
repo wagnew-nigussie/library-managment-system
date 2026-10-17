@@ -1,0 +1,746 @@
+import React, { useEffect, useState } from "react";
+import { apiRequest, getList } from "./services/apiClient.js";
+
+const menu = [
+  { id: "overview", icon: "▦", label: "Dashboard" },
+  { id: "books", icon: "▤", label: "Books" },
+  { id: "institutions", icon: "⌂", label: "Institutions" },
+  { id: "members", icon: "♙", label: "Members" },
+  { id: "loans", icon: "⇄", label: "Loans" },
+];
+
+const titles = {
+  overview: "Dashboard Overview",
+  books: "Book Catalog",
+  institutions: "Institutions",
+  members: "Library Members",
+  loans: "Book Loans",
+};
+
+const columns = {
+  books: [
+    ["title", "Book Title"],
+    ["author", "Author"],
+    ["isbn", "ISBN"],
+    ["publisher", "Publisher"],
+  ],
+  institutions: [
+    ["name", "Institution"],
+    ["slug", "Code"],
+    ["email", "Email"],
+    ["status", "Status"],
+  ],
+  members: [
+    ["membershipNumber", "Member Number"],
+    ["fullName", "Full Name"],
+    ["email", "Email"],
+    ["status", "Status"],
+  ],
+  loans: [
+    ["id", "Loan ID"],
+    ["memberId", "Member ID"],
+    ["bookCopyId", "Book Copy"],
+    ["dueAt", "Due Date"],
+    ["status", "Status"],
+  ],
+};
+
+export default function App() {
+  const [activeView, setActiveView] = useState("overview");
+  const [apiStatus, setApiStatus] = useState("Checking");
+  const [books, setBooks] = useState([]);
+  const [institutions, setInstitutions] = useState([]);
+  const [members, setMembers] = useState([]);
+  const [loans, setLoans] = useState([]);
+  const [loanForm, setLoanForm] = useState({ memberId: "", bookCopyId: "" });
+  const [memberForm, setMemberForm] = useState({ membershipNumber: "", fullName: "", email: "", phone: "" });
+  const [selectedInstitution, setSelectedInstitution] = useState("");
+  const [notice, setNotice] = useState("");
+  const [error, setError] = useState("");
+  const [showForm, setShowForm] = useState(false);
+  const [bookForm, setBookForm] = useState({
+    title: "",
+    author: "",
+    isbn: "",
+    publisher: "",
+    edition: "",
+  });
+  const [institutionForm, setInstitutionForm] = useState({
+    name: "",
+    email: "",
+    slug: "",
+  });
+
+  async function refreshBooks() {
+    const result = await apiRequest("/books");
+    setBooks(getList(result, "books"));
+  }
+
+  async function refreshInstitutions() {
+    const result = await apiRequest("/institutions");
+    setInstitutions(getList(result, "institutions"));
+  }
+
+  useEffect(() => {
+    apiRequest("/health")
+      .then(() => setApiStatus("Connected"))
+      .catch(() => setApiStatus("Offline"));
+
+    refreshBooks().catch(() => setBooks([]));
+    refreshInstitutions().catch(() => setInstitutions([]));
+  }, []);
+
+  useEffect(() => {
+    if (!selectedInstitution) {
+      setMembers([]);
+      setLoans([]);
+      return;
+    }
+
+    if (activeView === "members" || activeView === "loans") {
+      apiRequest(`/members?institutionId=${encodeURIComponent(selectedInstitution)}`)
+        .then((result) => setMembers(getList(result, "members")))
+        .catch((err) => setError(err.message));
+    }
+
+    if (activeView === "loans") {
+      apiRequest(`/loans?institutionId=${encodeURIComponent(selectedInstitution)}`)
+        .then((result) => setLoans(getList(result, "loans")))
+        .catch((err) => setError(err.message));
+    }
+  }, [activeView, selectedInstitution]);
+
+  function chooseView(id) {
+    setActiveView(id);
+    setShowForm(false);
+    setError("");
+    setNotice("");
+  }
+
+  async function submitBook(event) {
+    event.preventDefault();
+    setError("");
+    setNotice("");
+
+    try {
+      await apiRequest("/books", {
+        method: "POST",
+        body: JSON.stringify({
+          ...bookForm,
+          isbn: bookForm.isbn || undefined,
+          publisher: bookForm.publisher || undefined,
+          edition: bookForm.edition || undefined,
+        }),
+      });
+
+      await refreshBooks();
+      setBookForm({
+        title: "",
+        author: "",
+        isbn: "",
+        publisher: "",
+        edition: "",
+      });
+      setShowForm(false);
+      setNotice("Book added successfully.");
+    } catch (err) {
+      setError(err.message || "Could not save the book.");
+    }
+  }
+
+  async function submitInstitution(event) {
+    event.preventDefault();
+    setError("");
+    setNotice("");
+
+    const slug =
+      institutionForm.slug.trim() ||
+      institutionForm.name.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+
+    try {
+      await apiRequest("/institutions", {
+        method: "POST",
+        body: JSON.stringify({
+          name: institutionForm.name,
+          slug,
+          email: institutionForm.email || undefined,
+        }),
+      });
+
+      await refreshInstitutions();
+      setInstitutionForm({ name: "", email: "", slug: "" });
+      setShowForm(false);
+      setNotice("Institution registered. It may need Super Admin approval before use.");
+    } catch (err) {
+      setError(err.message || "Could not register the institution.");
+    }
+  }
+
+  async function updateInstitutionStatus(institutionId, action) {
+    setError("");
+    setNotice("");
+
+    try {
+      const result = await apiRequest(
+        `/institutions/${encodeURIComponent(institutionId)}/${action}`,
+        { method: "PATCH" }
+      );
+      await refreshInstitutions();
+      setNotice(result.message || `Institution ${action} successful.`);
+    } catch (err) {
+      setError(err.message || "Could not update institution status.");
+    }
+  }
+
+
+  async function submitLoan(event) {
+    event.preventDefault();
+    setError("");
+    setNotice("");
+
+    if (!selectedInstitution) {
+      setError("Please select an institution first.");
+      return;
+    }
+
+    try {
+      const result = await apiRequest("/loans", {
+        method: "POST",
+        body: JSON.stringify({
+          institutionId: selectedInstitution,
+          memberId: loanForm.memberId,
+          bookCopyId: loanForm.bookCopyId
+        })
+      });
+
+      const refreshedLoans = await apiRequest(
+        `/loans?institutionId=${encodeURIComponent(selectedInstitution)}`
+      );
+      setLoans(getList(refreshedLoans, "loans"));
+      await refreshBooks();
+      setLoanForm({ memberId: "", bookCopyId: "" });
+      setNotice(
+        `Book loan recorded successfully. Due: ${
+          result.data?.dueAt
+            ? new Date(result.data.dueAt).toLocaleDateString()
+            : "saved"
+        }`
+      );
+    } catch (err) {
+      setError(err.message || "Could not record the loan.");
+    }
+  }
+
+  async function returnLoan(loanId) {
+    setError("");
+    setNotice("");
+
+    try {
+      const result = await apiRequest(
+        `/loans/${encodeURIComponent(loanId)}/return`,
+        { method: "PATCH" }
+      );
+      const refreshedLoans = await apiRequest(
+        `/loans?institutionId=${encodeURIComponent(selectedInstitution)}`
+      );
+      setLoans(getList(refreshedLoans, "loans"));
+      await refreshBooks();
+      setNotice(result.message || "Book returned successfully.");
+    } catch (err) {
+      setError(err.message || "Could not return the book.");
+    }
+  }
+
+
+  async function submitMember(event) {
+    event.preventDefault();
+    setError("");
+    setNotice("");
+
+    if (!selectedInstitution) {
+      setError("Please select an institution first.");
+      return;
+    }
+
+    try {
+      await apiRequest("/members", {
+        method: "POST",
+        body: JSON.stringify({
+          institutionId: selectedInstitution,
+          membershipNumber: memberForm.membershipNumber.trim(),
+          fullName: memberForm.fullName.trim(),
+          email: memberForm.email.trim() || undefined,
+          phone: memberForm.phone.trim() || undefined
+        })
+      });
+
+      const result = await apiRequest(
+        `/members?institutionId=${encodeURIComponent(selectedInstitution)}`
+      );
+      setMembers(getList(result, "members"));
+      setMemberForm({ membershipNumber: "", fullName: "", email: "", phone: "" });
+      setShowForm(false);
+      setNotice("Member registered successfully.");
+    } catch (err) {
+      setError(err.message || "Could not register the member.");
+    }
+  }
+
+  const currentList =
+    activeView === "books" ? books :
+    activeView === "institutions" ? institutions :
+    activeView === "members" ? members :
+    activeView === "loans" ? loans : [];
+
+  function displayValue(value) {
+    if (value === null || value === undefined || value === "") return "—";
+    if (typeof value === "object") return value.fullName || value.title || value.name || "—";
+    return String(value);
+  }
+
+  return (
+    <div className="app-shell">
+      <aside className="sidebar">
+        <div className="brand">
+          <div className="brand-mark">L</div>
+          <div>
+            <strong>Libra</strong>
+            <span>Library System</span>
+          </div>
+        </div>
+
+        <div className="nav-heading">WORKSPACE</div>
+        <nav className="navigation">
+          {menu.map((item) => (
+            <button
+              key={item.id}
+              className={`nav-item ${activeView === item.id ? "active" : ""}`}
+              onClick={() => chooseView(item.id)}
+            >
+              <span className="nav-icon">{item.icon}</span>
+              <span>{item.label}</span>
+              {activeView === item.id && <span className="active-dot" />}
+            </button>
+          ))}
+        </nav>
+
+        <div className="sidebar-bottom">
+          <div className="small-book">▤</div>
+          <strong>One library platform</strong>
+          <p>Manage books, institutions and circulation in one place.</p>
+        </div>
+      </aside>
+
+      <main className="main-area">
+        <header className="topbar">
+          <div>
+            <div className="breadcrumb">Library Management / <span>{titles[activeView]}</span></div>
+            <h1>{titles[activeView]}</h1>
+          </div>
+          <div className="topbar-status">
+            <span className={`status-dot ${apiStatus === "Connected" ? "online" : ""}`} />
+            <span>API {apiStatus}</span>
+          </div>
+        </header>
+
+        <div className="page-content">
+          {error && (
+            <div className="notice error-notice">
+              <span>{error}</span>
+              <button onClick={() => setError("")}>×</button>
+            </div>
+          )}
+          {notice && (
+            <div className="notice success-notice">
+              <span>{notice}</span>
+              <button onClick={() => setNotice("")}>×</button>
+            </div>
+          )}
+
+          {activeView === "overview" && (
+            <>
+              <section className="welcome-panel">
+                <div>
+                  <div className="eyebrow">LIBRARY OPERATIONS</div>
+                  <h2>Everything your library needs.</h2>
+                  <p>Manage your catalog and institutions from one simple workspace.</p>
+                  <button className="primary-button" onClick={() => chooseView("books")}>
+                    Explore book catalog <span>→</span>
+                  </button>
+                </div>
+                <div className="welcome-illustration" aria-hidden="true">
+                  <div className="book-stack">
+                    <span className="book book-one" />
+                    <span className="book book-two" />
+                    <span className="book book-three" />
+                    <span className="book book-four" />
+                  </div>
+                  <div className="illustration-circle" />
+                </div>
+              </section>
+
+              <div className="section-heading">
+                <div>
+                  <h2>At a glance</h2>
+                  <p>Your system overview</p>
+                </div>
+              </div>
+
+              <section className="stat-grid">
+                <button className="stat-card" onClick={() => chooseView("books")}>
+                  <div className="stat-icon blue">▤</div>
+                  <span className="stat-label">Catalog books</span>
+                  <strong>{books.length}</strong>
+                  <span className="stat-foot">View book catalog <span>↗</span></span>
+                </button>
+                <button className="stat-card" onClick={() => chooseView("institutions")}>
+                  <div className="stat-icon purple">⌂</div>
+                  <span className="stat-label">Institutions</span>
+                  <strong>{institutions.length}</strong>
+                  <span className="stat-foot">View institutions <span>↗</span></span>
+                </button>
+                <div className="stat-card">
+                  <div className="stat-icon green">♙</div>
+                  <span className="stat-label">Members loaded</span>
+                  <strong>{members.length}</strong>
+                  <span className="stat-foot">Choose an institution to view members</span>
+                </div>
+                <div className="stat-card">
+                  <div className="stat-icon orange">⇄</div>
+                  <span className="stat-label">Loans loaded</span>
+                  <strong>{loans.length}</strong>
+                  <span className="stat-foot">Choose an institution to view loans</span>
+                </div>
+              </section>
+
+              <section className="content-panel">
+                <div className="panel-heading">
+                  <div>
+                    <h2>Recently added books</h2>
+                    <p>Books currently in the shared catalog</p>
+                  </div>
+                  <button className="text-button" onClick={() => chooseView("books")}>View all →</button>
+                </div>
+                {books.length === 0 ? (
+                  <div className="empty-state">
+                    <div className="empty-icon">▤</div>
+                    <strong>No books in the catalog yet</strong>
+                    <p>Add your first book to start building the collection.</p>
+                    <button className="primary-button" onClick={() => { chooseView("books"); setShowForm(true); }}>
+                      + Add a book
+                    </button>
+                  </div>
+                ) : (
+                  <div className="book-list">
+                    {books.slice(0, 5).map((book, index) => (
+                      <div className="book-row" key={book.id || `${book.title}-${index}`}>
+                        <div className="mini-book">▤</div>
+                        <div className="book-row-info">
+                          <strong>{displayValue(book.title)}</strong>
+                          <span>{displayValue(book.author)}</span>
+                        </div>
+                        <span className="subtle-label">{displayValue(book.publisher)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            </>
+          )}
+
+          {activeView !== "overview" && (
+            <>
+              <div className="section-heading resource-heading">
+                <div>
+                  <h2>{titles[activeView]}</h2>
+                  <p>
+                    {activeView === "books" && "Search and manage the shared book catalog."}
+                    {activeView === "institutions" && "Register and view participating institutions."}
+                    {activeView === "members" && "Members belong to a specific institution."}
+                    {activeView === "loans" && "Review circulation records for an institution."}
+                  </p>
+                </div>
+                {(activeView === "books" || activeView === "institutions" || activeView === "members") && (
+                  <button
+                    className="primary-button"
+                    onClick={() => {
+                      if (activeView === "members" && !selectedInstitution) {
+                        setError("Select an institution before registering a member.");
+                        return;
+                      }
+                      setError("");
+                      setShowForm(!showForm);
+                    }}
+                  >
+                    {showForm ? "Cancel" : "+ Add " + (
+                      activeView === "books" ? "book" :
+                      activeView === "institutions" ? "institution" : "member"
+                    )}
+                  </button>
+                )}
+              </div>
+
+              {activeView === "members" || activeView === "loans" ? (
+                <section className="content-panel filter-panel">
+                  <label htmlFor="institution-select">Select institution</label>
+                  <select
+                    id="institution-select"
+                    value={selectedInstitution}
+                    onChange={(event) => setSelectedInstitution(event.target.value)}
+                  >
+                    <option value="">Choose an institution...</option>
+                    {institutions.map((institution) => (
+                      <option key={institution.id} value={institution.id}>
+                        {institution.name}
+                      </option>
+                    ))}
+                  </select>
+                  {!selectedInstitution && (
+                    <p className="helper-text">Select an institution above to load its {activeView}.</p>
+                  )}
+                </section>
+              ) : null}
+
+              {activeView === "loans" && selectedInstitution && (
+                <form className="content-panel form-panel" onSubmit={submitLoan}>
+                  <h3>Borrow a book</h3>
+                  <p className="helper-text">
+                    Select an active member and an available book copy from this institution.
+                  </p>
+                  <div className="form-grid">
+                    <label>Library member *
+                      <select
+                        required
+                        value={loanForm.memberId}
+                        onChange={(event) =>
+                          setLoanForm({ ...loanForm, memberId: event.target.value })
+                        }
+                      >
+                        <option value="">Choose a member...</option>
+                        {members.map((member) => (
+                          <option key={member.id} value={member.id}>
+                            {member.fullName} — {member.membershipNumber}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>Available book copy *
+                      <select
+                        required
+                        value={loanForm.bookCopyId}
+                        onChange={(event) =>
+                          setLoanForm({ ...loanForm, bookCopyId: event.target.value })
+                        }
+                      >
+                        <option value="">Choose a book copy...</option>
+                        {books.flatMap((book) =>
+                          (book.copiesAsBook || [])
+                            .filter(
+                              (copy) =>
+                                copy.institutionId === selectedInstitution &&
+                                copy.status === "AVAILABLE"
+                            )
+                            .map((copy) => ({ ...copy, bookTitle: book.title }))
+                        ).map((copy) => (
+                          <option key={copy.id} value={copy.id}>
+                            {copy.bookTitle} — {copy.barcode}
+                            {copy.shelfLocation ? ` (${copy.shelfLocation})` : ""}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  <button className="primary-button" type="submit">
+                    Record book loan
+                  </button>
+                  <p className="helper-text">
+                    The return date follows the institution's configured loan period.
+                  </p>
+                </form>
+              )}
+
+              {showForm && activeView === "members" && selectedInstitution && (
+                <form className="content-panel form-panel" onSubmit={submitMember}>
+                  <h3>Register a library member</h3>
+                  <p className="helper-text">
+                    This member will belong to the selected institution.
+                  </p>
+                  <div className="form-grid">
+                    <label>Membership number *
+                      <input
+                        required
+                        value={memberForm.membershipNumber}
+                        onChange={(event) => setMemberForm({
+                          ...memberForm,
+                          membershipNumber: event.target.value
+                        })}
+                        placeholder="e.g. MEM-0002"
+                      />
+                    </label>
+                    <label>Full name *
+                      <input
+                        required
+                        value={memberForm.fullName}
+                        onChange={(event) => setMemberForm({
+                          ...memberForm,
+                          fullName: event.target.value
+                        })}
+                        placeholder="Enter member's full name"
+                      />
+                    </label>
+                    <label>Email
+                      <input
+                        type="email"
+                        value={memberForm.email}
+                        onChange={(event) => setMemberForm({
+                          ...memberForm,
+                          email: event.target.value
+                        })}
+                        placeholder="member@example.com"
+                      />
+                    </label>
+                    <label>Phone
+                      <input
+                        value={memberForm.phone}
+                        onChange={(event) => setMemberForm({
+                          ...memberForm,
+                          phone: event.target.value
+                        })}
+                        placeholder="Phone number"
+                      />
+                    </label>
+                  </div>
+                  <button className="primary-button" type="submit">
+                    Register member
+                  </button>
+                </form>
+              )}
+
+              {showForm && activeView === "books" && (
+                <form className="content-panel form-panel" onSubmit={submitBook}>
+                  <h3>Add a book to the catalog</h3>
+                  <div className="form-grid">
+                    <label>Book title *
+                      <input required value={bookForm.title} onChange={(e) => setBookForm({ ...bookForm, title: e.target.value })} placeholder="Enter the book title" />
+                    </label>
+                    <label>Author *
+                      <input required value={bookForm.author} onChange={(e) => setBookForm({ ...bookForm, author: e.target.value })} placeholder="Enter the author name" />
+                    </label>
+                    <label>ISBN
+                      <input value={bookForm.isbn} onChange={(e) => setBookForm({ ...bookForm, isbn: e.target.value })} placeholder="ISBN number" />
+                    </label>
+                    <label>Publisher
+                      <input value={bookForm.publisher} onChange={(e) => setBookForm({ ...bookForm, publisher: e.target.value })} placeholder="Publisher name" />
+                    </label>
+                    <label>Edition
+                      <input value={bookForm.edition} onChange={(e) => setBookForm({ ...bookForm, edition: e.target.value })} placeholder="e.g. 2nd edition" />
+                    </label>
+                  </div>
+                  <button className="primary-button" type="submit">Save book</button>
+                </form>
+              )}
+
+              {showForm && activeView === "institutions" && (
+                <form className="content-panel form-panel" onSubmit={submitInstitution}>
+                  <h3>Register a new institution</h3>
+                  <p className="helper-text">New institutions may need Super Admin approval before using library services.</p>
+                  <div className="form-grid">
+                    <label>Institution name *
+                      <input required value={institutionForm.name} onChange={(e) => setInstitutionForm({ ...institutionForm, name: e.target.value })} placeholder="e.g. Central School Library" />
+                    </label>
+                    <label>Institution code
+                      <input value={institutionForm.slug} onChange={(e) => setInstitutionForm({ ...institutionForm, slug: e.target.value })} placeholder="Optional unique code" />
+                    </label>
+                    <label>Email
+                      <input type="email" value={institutionForm.email} onChange={(e) => setInstitutionForm({ ...institutionForm, email: e.target.value })} placeholder="library@example.com" />
+                    </label>
+                  </div>
+                  <button className="primary-button" type="submit">Register institution</button>
+                </form>
+              )}
+
+              <section className="content-panel table-panel">
+                <div className="table-topline">
+                  <strong>{currentList.length} record{currentList.length === 1 ? "" : "s"}</strong>
+                  <span className="subtle-label">Live API data</span>
+                </div>
+                {currentList.length === 0 ? (
+                  <div className="empty-state">
+                    <div className="empty-icon">{activeView === "books" ? "▤" : activeView === "institutions" ? "⌂" : "↗"}</div>
+                    <strong>No records to display</strong>
+                    <p>
+                      {activeView === "books" && "Add a book to start your catalog."}
+                      {activeView === "institutions" && "Register your first institution."}
+                      {activeView === "members" && (selectedInstitution ? "No members were returned for this institution." : "Select an institution above first.")}
+                      {activeView === "loans" && (selectedInstitution ? "No loans were returned for this institution." : "Select an institution above first.")}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="table-scroll">
+                    <table>
+                      <thead>
+                        <tr>{(columns[activeView] || []).map(([key, label]) => <th key={key}>{label}</th>)}{(activeView === "institutions" || activeView === "loans") && <th>Actions</th>}</tr>
+                      </thead>
+                      <tbody>
+                        {currentList.map((record, index) => (
+                          <tr key={record.id || `${activeView}-${index}`}>
+                            {(columns[activeView] || []).map(([key]) => (
+                              <td key={key}>
+                                {key === "status" ? (
+                                  <span className={`record-status ${String(record[key] || "").toLowerCase()}`}>
+                                    {displayValue(record[key])}
+                                  </span>
+                                ) : displayValue(record[key])}
+                              </td>
+                            ))}
+                            {activeView === "institutions" && (
+                              <td>
+                                {record.status === "PENDING" ? (
+                                  <div className="row-actions">
+                                    <button type="button" className="approve-button"
+                                      onClick={() => updateInstitutionStatus(record.id, "approve")}>
+                                      Approve
+                                    </button>
+                                    <button type="button" className="reject-button"
+                                      onClick={() => updateInstitutionStatus(record.id, "reject")}>
+                                      Reject
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <span className="subtle-label">Reviewed</span>
+                                )}
+                              </td>
+                            )}
+                            {activeView === "loans" && (
+                              <td>
+                                {["ACTIVE", "OVERDUE"].includes(record.status) ? (
+                                  <button
+                                    type="button"
+                                    className="return-button"
+                                    onClick={() => returnLoan(record.id)}
+                                  >
+                                    Return book
+                                  </button>
+                                ) : (
+                                  <span className="subtle-label">No action needed</span>
+                                )}
+                              </td>
+                            )}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </section>
+            </>
+          )}
+          <footer className="page-footer">
+            <span>Libra Library Management System</span>
+            <span>Development workspace · Backend {apiStatus}</span>
+          </footer>
+        </div>
+      </main>
+    </div>
+  );
+}

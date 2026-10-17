@@ -1,0 +1,35 @@
+const API_BASE = "http://localhost:5000/api";
+
+export async function apiRequest(path, options = {}) {
+  const response = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+  const text = await response.text();
+  let result = {};
+
+  try {
+    result = text ? JSON.parse(text) : {};
+  } catch {
+    result = { message: text };
+  }
+
+  if (!response.ok) {
+    throw new Error(result.message || `Request failed: ${response.status}`);
+  }
+
+  return result;
+}
+
+export function getList(result, key) {
+  if (Array.isArray(result)) return result;
+  if (Array.isArray(result?.data)) return result.data;
+  if (Array.isArray(result?.items)) return result.items;
+  if (Array.isArray(result?.[key])) return result[key];
+  if (Array.isArray(result?.data?.[key])) return result.data[key];
+  return [];
+}

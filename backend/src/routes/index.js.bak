@@ -1,0 +1,609 @@
+import { Router } from "express";
+import prisma from "../config/prisma.js";
+
+const router = Router();
+
+router.get("/health", (req, res) => {
+  res.json({
+    success: true,
+    message: "Library Management API is running"
+  });
+});
+
+// Create an institution. It stays PENDING until approved.
+router.post("/institutions", async (req, res, next) => {
+  try {
+    const { name, slug, email, phone, address } = req.body;
+
+    if (!name?.trim() || !slug?.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Institution name and slug are required"
+      });
+    }
+
+    const institution = await prisma.institution.create({
+      data: {
+        name: name.trim(),
+        slug: slug.trim().toLowerCase(),
+        email,
+        phone,
+        address,
+        settings: { create: {} }
+      }
+    });
+
+    res.status(201).json({ success: true, data: institution });
+  } catch (error) {
+    if (error.code === "P2002") {
+      return res.status(409).json({
+        success: false,
+        message: "That institution slug is already in use"
+      });
+    }
+    next(error);
+  }
+});
+
+router.get("/institutions", async (req, res, next) => {
+  try {
+    const institutions = await prisma.institution.findMany({
+      orderBy: { createdAt: "desc" }
+    });
+    res.json({ success: true, data: institutions });
+  } catch (error) {
+    next(error);
+  }
+});
+
+
+// Approve a pending institution.
+// Development only: protect this endpoint with Super Admin authentication
+// before deploying the system.
+router.patch("/institutions/:id/approve", async (req, res, next) => {
+  try {
+    const institution = await prisma.institution.findUnique({
+      where: { id: req.params.id }
+    });
+
+    if (!institution) {
+      return res.status(404).json({
+        success: false,
+        message: "Institution not found"
+      });
+    }
+
+    if (institution.status !== "PENDING") {
+      return res.status(409).json({
+        success: false,
+        message: "Only pending institutions can be approved"
+      });
+    }
+
+    const updated = await prisma.institution.update({
+      where: { id: institution.id },
+      data: { status: "APPROVED" }
+    });
+
+    res.json({
+      success: true,
+      message: "Institution approved",
+      data: updated
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Reject a pending institution.
+// Development only: protect this endpoint with Super Admin authentication
+// before deploying the system.
+router.patch("/institutions/:id/reject", async (req, res, next) => {
+  try {
+    const institution = await prisma.institution.findUnique({
+      where: { id: req.params.id }
+    });
+
+    if (!institution) {
+      return res.status(404).json({
+        success: false,
+        message: "Institution not found"
+      });
+    }
+
+    if (institution.status !== "PENDING") {
+      return res.status(409).json({
+        success: false,
+        message: "Only pending institutions can be rejected"
+      });
+    }
+
+    const updated = await prisma.institution.update({
+      where: { id: institution.id },
+      data: { status: "REJECTED" }
+    });
+
+    res.json({
+      success: true,
+      message: "Institution rejected",
+      data: updated
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Add shared book metadata to the catalog.
+router.post("/books", async (req, res, next) => {
+  try {
+    const { title, author, isbn, publisher, edition, description } = req.body;
+
+    if (!title?.trim() || !author?.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Book title and author are required"
+      });
+    }
+
+    const book = await prisma.book.create({
+      data: {
+        title: title.trim(),
+        author: author.trim(),
+        isbn: isbn?.trim() || null,
+        publisher: publisher?.trim() || null,
+        edition: edition?.trim() || null,
+        description: description?.trim() || null
+      }
+    });
+
+    res.status(201).json({ success: true, data: book });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get("/books", async (req, res, next) => {
+  try {
+    const search = String(req.query.search || "").trim();
+
+    const books = await prisma.book.findMany({
+      where: search
+        ? {
+            OR: [
+              { title: { contains: search, mode: "insensitive" } },
+              { author: { contains: search, mode: "insensitive" } },
+              { isbn: { contains: search, mode: "insensitive" } }
+            ]
+          }
+        : undefined,
+      include: {
+        copiesAsBook: {
+          select: { id: true, institutionId: true, status: true }
+        }
+      },
+      orderBy: { title: "asc" },
+      take: 100
+    });
+
+    res.json({ success: true, data: books });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Add an institution-owned physical copy of a catalog book.
+router.post("/copies", async (req, res, next) => {
+  try {
+    const { institutionId, bookId, barcode, shelfLocation } = req.body;
+
+    if (!institutionId || !bookId || !barcode?.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "institutionId, bookId and barcode are required"
+      });
+    }
+
+    const institution = await prisma.institution.findUnique({
+      where: { id: institutionId }
+    });
+
+    if (!institution || institution.status !== "APPROVED") {
+      return res.status(400).json({
+        success: false,
+        message: "Institution must exist and be approved"
+      });
+    }
+
+    const copy = await prisma.bookCopy.create({
+      data: {
+        institutionId,
+        bookId,
+        barcode: barcode.trim(),
+        shelfLocation: shelfLocation?.trim() || null
+      }
+    });
+
+    res.status(201).json({ success: true, data: copy });
+  } catch (error) {
+    if (error.code === "P2002") {
+      return res.status(409).json({
+        success: false,
+        message: "That barcode is already used by this institution"
+      });
+    }
+    next(error);
+  }
+});
+
+// Add a library member.
+router.post("/members", async (req, res, next) => {
+  try {
+    const { institutionId, membershipNumber, fullName, email, phone } = req.body;
+
+    if (!institutionId || !membershipNumber?.trim() || !fullName?.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "institutionId, membershipNumber and fullName are required"
+      });
+    }
+
+    const institution = await prisma.institution.findUnique({
+      where: { id: institutionId }
+    });
+
+    if (!institution || institution.status !== "APPROVED") {
+      return res.status(400).json({
+        success: false,
+        message: "Institution must exist and be approved"
+      });
+    }
+
+    const member = await prisma.member.create({
+      data: {
+        institutionId,
+        membershipNumber: membershipNumber.trim(),
+        fullName: fullName.trim(),
+        email: email?.trim() || null,
+        phone: phone?.trim() || null
+      }
+    });
+
+    res.status(201).json({ success: true, data: member });
+  } catch (error) {
+    if (error.code === "P2002") {
+      return res.status(409).json({
+        success: false,
+        message: "That membership number is already used by this institution"
+      });
+    }
+    next(error);
+  }
+});
+
+router.get("/members", async (req, res, next) => {
+  try {
+    const { institutionId } = req.query;
+
+    if (!institutionId) {
+      return res.status(400).json({
+        success: false,
+        message: "institutionId query parameter is required"
+      });
+    }
+
+    const members = await prisma.member.findMany({
+      where: { institutionId: String(institutionId) },
+      orderBy: { fullName: "asc" }
+    });
+
+    res.json({ success: true, data: members });
+  } catch (error) {
+    next(error);
+  }
+});
+
+
+// Borrow an available book copy.
+router.post("/loans", async (req, res, next) => {
+  try {
+    const { institutionId, memberId, bookCopyId, dueAt } = req.body;
+
+    if (!institutionId || !memberId || !bookCopyId) {
+      return res.status(400).json({
+        success: false,
+        message: "institutionId, memberId and bookCopyId are required"
+      });
+    }
+
+    const institution = await prisma.institution.findUnique({
+      where: { id: institutionId },
+      include: { settings: true }
+    });
+
+    if (!institution || institution.status !== "APPROVED") {
+      return res.status(400).json({
+        success: false,
+        message: "Institution must exist and be approved"
+      });
+    }
+
+    const member = await prisma.member.findFirst({
+      where: {
+        id: memberId,
+        institutionId,
+        status: "ACTIVE"
+      }
+    });
+
+    if (!member) {
+      return res.status(400).json({
+        success: false,
+        message: "Active member not found in this institution"
+      });
+    }
+
+    const copy = await prisma.bookCopy.findFirst({
+      where: { id: bookCopyId, institutionId }
+    });
+
+    if (!copy) {
+      return res.status(404).json({
+        success: false,
+        message: "Book copy not found in this institution"
+      });
+    }
+
+    if (copy.status !== "AVAILABLE") {
+      return res.status(409).json({
+        success: false,
+        message: "Book copy is not available"
+      });
+    }
+
+    const maxLoans = institution.settings?.maxLoans ?? 5;
+    const activeLoans = await prisma.loan.count({
+      where: {
+        institutionId,
+        memberId,
+        status: { in: ["ACTIVE", "OVERDUE"] }
+      }
+    });
+
+    if (activeLoans >= maxLoans) {
+      return res.status(409).json({
+        success: false,
+        message: "Member has reached the maximum number of loans"
+      });
+    }
+
+    const loanDays = institution.settings?.loanDays ?? 14;
+    const dueDate = dueAt
+      ? new Date(dueAt)
+      : new Date(Date.now() + loanDays * 24 * 60 * 60 * 1000);
+
+    if (Number.isNaN(dueDate.getTime()) || dueDate <= new Date()) {
+      return res.status(400).json({
+        success: false,
+        message: "dueAt must be a valid future date"
+      });
+    }
+
+    const loan = await prisma.$transaction(async (tx) => {
+      const updatedCopy = await tx.bookCopy.updateMany({
+        where: {
+          id: bookCopyId,
+          institutionId,
+          status: "AVAILABLE"
+        },
+        data: { status: "LOANED" }
+      });
+
+      if (updatedCopy.count !== 1) {
+        const error = new Error("Book copy is no longer available");
+        error.status = 409;
+        throw error;
+      }
+
+      return tx.loan.create({
+        data: {
+          institutionId,
+          memberId,
+          bookCopyId,
+          dueAt: dueDate
+        },
+        include: {
+          member: true,
+          bookCopy: { include: { book: true } }
+        }
+      });
+    });
+
+    res.status(201).json({ success: true, data: loan });
+  } catch (error) {
+    next(error);
+  }
+});
+
+
+// Return a borrowed book.
+router.patch("/loans/:id/return", async (req, res, next) => {
+  try {
+    const loan = await prisma.loan.findUnique({
+      where: { id: req.params.id }
+    });
+
+    if (!loan) {
+      return res.status(404).json({
+        success: false,
+        message: "Loan not found"
+      });
+    }
+
+    if (!["ACTIVE", "OVERDUE"].includes(loan.status)) {
+      return res.status(409).json({
+        success: false,
+        message: "This loan cannot be returned"
+      });
+    }
+
+    const returnedLoan = await prisma.$transaction(async (tx) => {
+      await tx.bookCopy.update({
+        where: { id: loan.bookCopyId },
+        data: { status: "AVAILABLE" }
+      });
+
+      return tx.loan.update({
+        where: { id: loan.id },
+        data: {
+          status: "RETURNED",
+          returnedAt: new Date()
+        },
+        include: {
+          member: true,
+          bookCopy: { include: { book: true } }
+        }
+      });
+    });
+
+    res.json({
+      success: true,
+      message: "Book returned successfully",
+      data: returnedLoan
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+
+// Read institution circulation settings.
+router.get("/institutions/:id/settings", async (req, res, next) => {
+  try {
+    const institution = await prisma.institution.findUnique({
+      where: { id: req.params.id }
+    });
+
+    if (!institution) {
+      return res.status(404).json({
+        success: false,
+        message: "Institution not found"
+      });
+    }
+
+    const settings = await prisma.institutionSettings.upsert({
+      where: { institutionId: institution.id },
+      update: {},
+      create: { institutionId: institution.id }
+    });
+
+    res.json({ success: true, data: settings });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Update institution circulation settings.
+router.patch("/institutions/:id/settings", async (req, res, next) => {
+  try {
+    const institution = await prisma.institution.findUnique({
+      where: { id: req.params.id }
+    });
+
+    if (!institution) {
+      return res.status(404).json({
+        success: false,
+        message: "Institution not found"
+      });
+    }
+
+    const { loanDays, maxLoans, finePerDay } = req.body;
+    const data = {};
+
+    if (
+      loanDays === undefined &&
+      maxLoans === undefined &&
+      finePerDay === undefined
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Provide loanDays, maxLoans, or finePerDay"
+      });
+    }
+
+    if (loanDays !== undefined) {
+      const value = Number(loanDays);
+      if (!Number.isInteger(value) || value < 1 || value > 90) {
+        return res.status(400).json({
+          success: false,
+          message: "loanDays must be an integer from 1 to 90"
+        });
+      }
+      data.loanDays = value;
+    }
+
+    if (maxLoans !== undefined) {
+      const value = Number(maxLoans);
+      if (!Number.isInteger(value) || value < 1 || value > 100) {
+        return res.status(400).json({
+          success: false,
+          message: "maxLoans must be an integer from 1 to 100"
+        });
+      }
+      data.maxLoans = value;
+    }
+
+    if (finePerDay !== undefined) {
+      const value = Number(finePerDay);
+      if (!Number.isFinite(value) || value < 0 || value > 100000) {
+        return res.status(400).json({
+          success: false,
+          message: "finePerDay must be a number from 0 to 100000"
+        });
+      }
+      data.finePerDay = value;
+    }
+
+    const settings = await prisma.institutionSettings.upsert({
+      where: { institutionId: institution.id },
+      update: data,
+      create: { institutionId: institution.id, ...data }
+    });
+
+    res.json({
+      success: true,
+      message: "Institution settings updated",
+      data: settings
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Show loans for a specific institution.
+router.get("/loans", async (req, res, next) => {
+  try {
+    const { institutionId } = req.query;
+
+    if (!institutionId) {
+      return res.status(400).json({
+        success: false,
+        message: "institutionId query parameter is required"
+      });
+    }
+
+    const loans = await prisma.loan.findMany({
+      where: { institutionId: String(institutionId) },
+      include: {
+        member: true,
+        bookCopy: { include: { book: true } }
+      },
+      orderBy: { borrowedAt: "desc" }
+    });
+
+    res.json({ success: true, data: loans });
+  } catch (error) {
+    next(error);
+  }
+});
+
+export default router;
